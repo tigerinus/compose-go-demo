@@ -25,7 +25,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stacks, err := serviceProxy.List(ctx, api.ListOptions{})
+	stacks, err := serviceProxy.List(ctx, api.ListOptions{
+		All: true,
+	})
 	if err != nil {
 		panic(err)
 	}
