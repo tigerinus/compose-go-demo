@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/compose"
 )
@@ -13,6 +14,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	dockerCli.Initialize(&flags.ClientOptions{
+		Common: &flags.CommonOptions{},
+	})
 
 	composeService := compose.NewComposeService(dockerCli)
 	serviceProxy := api.NewServiceProxy().WithService(composeService)
