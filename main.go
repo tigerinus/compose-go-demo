@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"path/filepath"
+	"strings"
 
 	"github.com/compose-spec/compose-go/cli"
 	"github.com/docker/cli/cli/command"
@@ -30,17 +30,43 @@ func (s *service) list(ctx context.Context) {
 
 func (s *service) create(ctx context.Context) {
 	yamlFilePath := "/home/ubuntu/junk/wp/docker-compose.yml"
-	workdir := filepath.Dir(yamlFilePath)
 
-	project, err := cli.ProjectFromOptions(&cli.ProjectOptions{
-		WorkingDir:  workdir,
-		ConfigPaths: []string{yamlFilePath},
-	})
+	options, err := cli.NewProjectOptions(
+		[]string{yamlFilePath},
+		cli.WithResolvedPaths(true),
+		cli.WithOsEnv,
+		cli.WithDotEnv,
+		cli.WithConfigFileEnv,
+		cli.WithDefaultConfigPath,
+	)
 	if err != nil {
 		panic(err)
 	}
 
-	project.Name = "wp"
+	// copied from https://github.com/docker/compose/blob/v2/cmd/compose/compose.go
+	// see https://stackoverflow.com/questions/74830594/created-compose-project-not-listed-when-using-docker-compose-package-in-go
+
+	project, err := cli.ProjectFromOptions(options)
+	if err != nil {
+		panic(err)
+	}
+
+	for i, s := range project.Services {
+		s.CustomLabels = map[string]string{
+			api.ProjectLabel:     project.Name,
+			api.ServiceLabel:     s.Name,
+			api.VersionLabel:     api.ComposeVersion,
+			api.WorkingDirLabel:  project.WorkingDir,
+			api.ConfigFilesLabel: strings.Join(project.ComposeFiles, ","),
+			api.OneoffLabel:      "False", // default, will be overridden by `run` command
+		}
+		if options.EnvFile != "" {
+			s.CustomLabels[api.EnvironmentFileLabel] = options.EnvFile
+		}
+		project.Services[i] = s
+	}
+
+	project.WithoutUnnecessaryResources()
 
 	if err := s.apiService.Create(ctx, project, api.CreateOptions{}); err != nil {
 		panic(err)
