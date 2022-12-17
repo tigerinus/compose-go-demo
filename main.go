@@ -2,35 +2,97 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/compose-spec/compose-go/cli"
+	"github.com/compose-spec/compose-go/types"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/compose"
+	"github.com/docker/compose/v2/pkg/progress"
 )
 
 type service struct {
 	apiService api.Service
 }
 
-func (s *service) list(ctx context.Context) {
+type logConsumer struct{}
+
+func (l *logConsumer) Log(containerName, message string) {
+	fmt.Printf("Log - container: %s, msg: %s\n", containerName, message)
+}
+
+func (l *logConsumer) Err(containerName, message string) {
+	fmt.Printf("Err - container: %s, msg: %s\n", containerName, message)
+}
+
+func (l *logConsumer) Status(container, msg string) {
+	fmt.Printf("Status - container: %s, msg: %s\n", container, msg)
+}
+
+func (l *logConsumer) Register(container string) {
+	fmt.Printf("Register - container: %s\n", container)
+}
+
+func NewLogConsumer() api.LogConsumer {
+	return &logConsumer{}
+}
+
+func (s *service) print(ctx context.Context) error {
 	stacks, err := s.apiService.List(ctx, api.ListOptions{
 		All: true,
 	})
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	for _, stack := range stacks {
-		println(stack.Name)
+		fmt.Printf("Stack: %+v", stack)
 	}
+
+	return nil
 }
 
-func (s *service) create(ctx context.Context) {
-	yamlFilePath := "/home/ubuntu/junk/wp/docker-compose.yml"
+func (s *service) create(ctx context.Context, project *types.Project) error {
+	fmt.Println("Creating project:", project.Name)
+	return s.apiService.Create(ctx, project, api.CreateOptions{})
+}
 
+func (s *service) start(ctx context.Context, projectName string) error {
+	fmt.Println("Starting project:", projectName)
+	return s.apiService.Start(ctx, projectName, api.StartOptions{
+		Attach: NewLogConsumer(),
+		Wait:   true,
+	})
+}
+
+func (s *service) stop(ctx context.Context, projectName string) error {
+	fmt.Println("Stopping project:", projectName)
+	return s.apiService.Stop(ctx, projectName, api.StopOptions{})
+}
+
+func (s *service) remove(ctx context.Context, projectName string) error {
+	fmt.Println("Removing project:", projectName)
+	return s.apiService.Remove(ctx, projectName, api.RemoveOptions{
+		Force: true,
+	})
+}
+
+func (s *service) event(ctx context.Context, projectName string) error {
+	return s.apiService.Events(ctx, projectName, api.EventsOptions{
+		Consumer: func(event api.Event) error {
+			fmt.Printf("Event: %+v", event)
+			return nil
+		},
+	})
+}
+
+// partially copied from https://github.com/docker/compose/blob/v2/cmd/compose/compose.go
+// (see https://stackoverflow.com/questions/74830594/created-compose-project-not-listed-when-using-docker-compose-package-in-go)
+func loadProject(yamlFilePath string) (*types.Project, error) {
 	options, err := cli.NewProjectOptions(
 		[]string{yamlFilePath},
 		cli.WithResolvedPaths(true),
@@ -40,15 +102,12 @@ func (s *service) create(ctx context.Context) {
 		cli.WithDefaultConfigPath,
 	)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-
-	// copied from https://github.com/docker/compose/blob/v2/cmd/compose/compose.go
-	// see https://stackoverflow.com/questions/74830594/created-compose-project-not-listed-when-using-docker-compose-package-in-go
 
 	project, err := cli.ProjectFromOptions(options)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	for i, s := range project.Services {
@@ -68,9 +127,7 @@ func (s *service) create(ctx context.Context) {
 
 	project.WithoutUnnecessaryResources()
 
-	if err := s.apiService.Create(ctx, project, api.CreateOptions{}); err != nil {
-		panic(err)
-	}
+	return project, nil
 }
 
 func main() {
@@ -87,13 +144,61 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	writer, err := progress.NewWriter(os.Stdout)
+	if err != nil {
+		panic(err)
+	}
+
+	// writer.Start(ctx)
+
+	progress.WithContextWriter(ctx, writer)
+
 	composeService := &service{
 		apiService: compose.NewComposeService(dockerCli),
 	}
 
-	composeService.list(ctx)
+	yamlFilePath := "/home/ubuntu/junk/wp/docker-compose.yml"
 
-	composeService.create(ctx)
+	project, err := loadProject(yamlFilePath)
+	if err != nil {
+		panic(err)
+	}
 
-	composeService.list(ctx)
+	go composeService.event(ctx, project.Name)
+
+	if err := composeService.print(ctx); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.create(ctx, project); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.print(ctx); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.start(ctx, project.Name); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.print(ctx); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.stop(ctx, project.Name); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.print(ctx); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.remove(ctx, project.Name); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.print(ctx); err != nil {
+		panic(err)
+	}
 }
