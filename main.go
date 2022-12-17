@@ -154,6 +154,8 @@ func main() {
 		panic(err)
 	}
 
+	// TODO - replace stdout with a pipe (and add a defer to restore it later)
+
 	go composeService.event(ctx, project.Name)
 
 	if err := composeService.print(ctx); err != nil {
