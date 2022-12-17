@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -17,28 +18,6 @@ import (
 
 type service struct {
 	apiService api.Service
-}
-
-type logConsumer struct{}
-
-func (l *logConsumer) Log(containerName, message string) {
-	fmt.Printf("Log - container: %s, msg: %s\n", containerName, message)
-}
-
-func (l *logConsumer) Err(containerName, message string) {
-	fmt.Printf("Err - container: %s, msg: %s\n", containerName, message)
-}
-
-func (l *logConsumer) Status(container, msg string) {
-	fmt.Printf("Status - container: %s, msg: %s\n", container, msg)
-}
-
-func (l *logConsumer) Register(container string) {
-	fmt.Printf("Register - container: %s\n", container)
-}
-
-func NewLogConsumer() api.LogConsumer {
-	return &logConsumer{}
 }
 
 func (s *service) print(ctx context.Context) error {
@@ -63,10 +42,7 @@ func (s *service) create(ctx context.Context, project *types.Project) error {
 
 func (s *service) start(ctx context.Context, projectName string) error {
 	fmt.Println("Starting project:", projectName)
-	return s.apiService.Start(ctx, projectName, api.StartOptions{
-		Attach: NewLogConsumer(),
-		Wait:   true,
-	})
+	return s.apiService.Start(ctx, projectName, api.StartOptions{Wait: true})
 }
 
 func (s *service) stop(ctx context.Context, projectName string) error {
@@ -76,9 +52,7 @@ func (s *service) stop(ctx context.Context, projectName string) error {
 
 func (s *service) remove(ctx context.Context, projectName string) error {
 	fmt.Println("Removing project:", projectName)
-	return s.apiService.Remove(ctx, projectName, api.RemoveOptions{
-		Force: true,
-	})
+	return s.apiService.Remove(ctx, projectName, api.RemoveOptions{Force: true})
 }
 
 func (s *service) event(ctx context.Context, projectName string) error {
@@ -144,14 +118,30 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	writer, err := progress.NewWriter(os.Stdout)
+	r, w, err := os.Pipe()
+
+	writer, err := progress.NewWriter(w)
 	if err != nil {
 		panic(err)
 	}
 
-	// writer.Start(ctx)
-
 	progress.WithContextWriter(ctx, writer)
+
+	go func() {
+		scanner := bufio.NewScanner(r)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if !scanner.Scan() {
+					return
+				}
+				fmt.Println("Scan:", scanner.Text())
+			}
+		}
+	}()
 
 	composeService := &service{
 		apiService: compose.NewComposeService(dockerCli),
