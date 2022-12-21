@@ -13,15 +13,17 @@ import (
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/compose"
-	"github.com/docker/compose/v2/pkg/progress"
+	dockerTypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
 )
 
 type service struct {
-	apiService api.Service
+	composeService api.Service
+	dockerClient   client.APIClient
 }
 
 func (s *service) print(ctx context.Context) error {
-	stacks, err := s.apiService.List(ctx, api.ListOptions{
+	stacks, err := s.composeService.List(ctx, api.ListOptions{
 		All: true,
 	})
 	if err != nil {
@@ -35,33 +37,72 @@ func (s *service) print(ctx context.Context) error {
 	return nil
 }
 
+func (s *service) pull(ctx context.Context, project *types.Project) error {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+
+	oldStderr := os.Stderr
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	os.Stderr = w
+
+	go func() {
+		scanner := bufio.NewScanner(r)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if !scanner.Scan() {
+					return
+				}
+				fmt.Println("Scan:", scanner.Text())
+			}
+		}
+	}()
+
+	fmt.Println("Pulling project:", project.Name)
+	return s.composeService.Pull(ctx, project, api.PullOptions{})
+}
+
 func (s *service) create(ctx context.Context, project *types.Project) error {
 	fmt.Println("Creating project:", project.Name)
-	return s.apiService.Create(ctx, project, api.CreateOptions{})
+	return s.composeService.Create(ctx, project, api.CreateOptions{})
 }
 
 func (s *service) start(ctx context.Context, projectName string) error {
 	fmt.Println("Starting project:", projectName)
-	return s.apiService.Start(ctx, projectName, api.StartOptions{Wait: true})
+	return s.composeService.Start(ctx, projectName, api.StartOptions{Wait: true})
 }
 
 func (s *service) stop(ctx context.Context, projectName string) error {
 	fmt.Println("Stopping project:", projectName)
-	return s.apiService.Stop(ctx, projectName, api.StopOptions{})
+	return s.composeService.Stop(ctx, projectName, api.StopOptions{})
 }
 
 func (s *service) remove(ctx context.Context, projectName string) error {
 	fmt.Println("Removing project:", projectName)
-	return s.apiService.Remove(ctx, projectName, api.RemoveOptions{Force: true})
+	return s.composeService.Remove(ctx, projectName, api.RemoveOptions{Force: true})
 }
 
 func (s *service) event(ctx context.Context, projectName string) error {
-	return s.apiService.Events(ctx, projectName, api.EventsOptions{
-		Consumer: func(event api.Event) error {
-			fmt.Printf("Event: %+v", event)
+	msg, err := s.dockerClient.Events(ctx, dockerTypes.EventsOptions{})
+
+	for {
+		select {
+		case <-ctx.Done():
 			return nil
-		},
-	})
+		case e := <-err:
+			return e
+		case event := <-msg:
+			fmt.Printf("Event: %+v", event)
+		}
+	}
 }
 
 // partially copied from https://github.com/docker/compose/blob/v2/cmd/compose/compose.go
@@ -118,33 +159,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	r, w, err := os.Pipe()
-
-	writer, err := progress.NewWriter(w)
-	if err != nil {
-		panic(err)
-	}
-
-	progress.WithContextWriter(ctx, writer)
-
-	go func() {
-		scanner := bufio.NewScanner(r)
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if !scanner.Scan() {
-					return
-				}
-				fmt.Println("Scan:", scanner.Text())
-			}
-		}
-	}()
-
 	composeService := &service{
-		apiService: compose.NewComposeService(dockerCli),
+		composeService: compose.NewComposeService(dockerCli),
+		dockerClient:   dockerCli.Client(),
 	}
 
 	yamlFilePath := "/home/ubuntu/junk/wp/docker-compose.yml"
@@ -159,6 +176,10 @@ func main() {
 	go composeService.event(ctx, project.Name)
 
 	if err := composeService.print(ctx); err != nil {
+		panic(err)
+	}
+
+	if err := composeService.pull(ctx, project); err != nil {
 		panic(err)
 	}
 
